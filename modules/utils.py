@@ -1,14 +1,14 @@
-import mimetypes
-import sys
-
 import os
+import sys
 import pickle
-import io
+import mimetypes
 
 from google.auth.transport.requests import Request
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseUpload
+
+from tabulate import tabulate
+from termcolor import colored
 
 from modules.logger import Logger
 
@@ -41,6 +41,7 @@ def authenticate():
     drive_service = build('drive', 'v3', credentials=creds)
     return drive_service
 
+service = authenticate()
 
 def convert_size(size_bytes):
     if size_bytes < 1024:
@@ -61,7 +62,6 @@ def get_file_mimetype(file_path):
         sys.exit(1)
 
 def is_valid_file_id(file_id):
-    service = authenticate()
     try:
         result = service.files().get(fileId=file_id, fields='id').execute()
         return True
@@ -69,7 +69,7 @@ def is_valid_file_id(file_id):
         return False
 
 def get_folder_id(folder_name, parent_id):
-    service = authenticate()
+    # service = authenticate()
     query = f"mimeType='application/vnd.google-apps.folder' and name='{folder_name}' and '{parent_id}' in parents"
     results = service.files().list(q=query, spaces='drive', pageSize=1, fields='files(id)').execute()
     folders = results.get('files', [])
@@ -78,10 +78,10 @@ def get_folder_id(folder_name, parent_id):
     else:
         return None
 
-def search_file_by_id(file_id):
-    service = authenticate()
+def search_item_by_id(file_id):
+    # service = authenticate()
     if not is_valid_file_id(file_id):
-        log.error("ID de archivo inválido.")
+        log.error("ID inválido.")
         return
     try:
         result = service.files().get(fileId=file_id).execute()
@@ -91,10 +91,20 @@ def search_file_by_id(file_id):
         log.log(f"Tipo de archivo: {result['mimeType']}")
         log.log(f"Tamaño: {result['size']} bytes")
     except:
-        log.error("No se pudo mostrar alguna propiedad del archivo.")
+        #log.error("No se pudo mostrar alguna propiedad del archivo.")
+        pass
+
+def find_by_id(file_id):
+    if not is_valid_file_id(file_id):
+        log.error("ID inválido.")
+        return
+    try:
+        return service.files().get(fileId=file_id).execute()
+    except:
+        return False
 
 def list_files_in_folder(folder_name):
-    service = authenticate()
+    # service = authenticate()
     # Buscar la carpeta por su nombre
     folder_results = service.files().list(q=f"mimeType='application/vnd.google-apps.folder' and name='{folder_name}'", spaces='drive', pageSize=10, fields="nextPageToken, files(id, name)").execute()
     folder_items = folder_results.get('files', [])
@@ -127,7 +137,7 @@ def list_files_in_folder(folder_name):
         pass
 
 def list_folders():
-    service = authenticate()
+    # service = authenticate()
     # Buscar la carpeta por su nombre
     folder_results = service.files().list(q=f"mimeType='application/vnd.google-apps.folder' and trashed=false and 'root' in parents", spaces='drive', pageSize=10, fields="nextPageToken, files(id, name)").execute()
     folder_items = folder_results.get('files', [])
@@ -142,8 +152,6 @@ def list_folders():
 def navigate_folders(folder_path):
     folders = folder_path.split('/')
     current_folder_id = 'root'
-    service = authenticate()
-
     for folder_name in folders:
         if folder_name == '':
             continue
@@ -154,12 +162,149 @@ def navigate_folders(folder_path):
             log.error(f"No se encontró la carpeta '{folder_name}' en el directorio actual.")
             return
 
-    results = service.files().list(q=f"'{current_folder_id}' in parents", spaces='drive', pageSize=10, fields="files(name, id)").execute()
+    results = service.files().list(q=f"'{current_folder_id}' in parents", spaces='drive', pageSize=10, fields="files(name, id, mimeType)").execute()
     files = results.get('files', [])
-    
+
     log.info(f"Archivos en la carpeta '{folder_path}':")
     if files:
-        for file in files:
-            log.log(f"Nombre: {file['name']} | ID: {file['id']}")
+        max_name_length = max(len(file['name'] + ' (' + file['mimeType'] + ')') for file in files)
+        max_id_length = max(len(file['id']) for file in files)
+        padding_name = '─' * ((max_name_length - len('Nombre')) // 2)
+        padding_id = '─' * ((max_id_length - len('ID')) // 2)
+        table_data = [[colored(file['name'], 'white', 'on_blue') + f" ({file['mimeType']})", colored(file['id'], 'white')] for file in files]
+        table_headers = [colored(f"{padding_name} Nombre {padding_name}", 'white', 'on_magenta'), colored(f"{padding_id} ID {padding_id}", 'white', 'on_cyan')]
+        table = tabulate(table_data, headers=table_headers, tablefmt='rounded_grid')
+        print(table)
     else:
         log.error("No se encontraron archivos en esta carpeta.")
+
+
+def get_folder_item_count(folder_id):
+    try:
+        count = 0
+        page_size = 1000  # Tamaño de página grande para obtener todos los resultados
+        page_token = None
+        while True:
+            results = service.files().list(q=f"'{folder_id}' in parents", spaces='drive', pageSize=page_size, pageToken=page_token, fields="nextPageToken, files(id)").execute()
+            items = results.get('files', [])
+            count += len(items)
+            page_token = results.get('nextPageToken')
+            if not page_token:
+                break
+        return count
+    except Exception as e:
+        log.error(f"No se pudo obtener el número de elementos en la carpeta (ID: {folder_id}): {str(e)}")
+        return None
+
+
+def lfiles_in_folder(folder_id, folder_name=None, page_size=10):
+    try:
+        page_token = None
+        file_counter = 0
+
+        # Verificar la cantidad de elementos en la carpeta
+        folder_item_count = get_folder_item_count(folder_id)
+
+        # Si hay más de 100 elementos, preguntar al usuario
+        if folder_item_count and folder_item_count > 100:
+            answer = input(f"\033[93m[WARN]\033[0m Hay más de 100 elementos en la carpeta ({folder_item_count}). ¿Desea verlos de todos modos? (y/n): ")
+            if answer.lower() != "y":
+                return
+
+        while True:
+            if folder_name:
+                query = f"'{folder_id}' in parents and name='{folder_name}'"
+            else:
+                query = f"'{folder_id}' in parents"
+
+            results = service.files().list(q=query, spaces='drive', pageSize=page_size, pageToken=page_token, fields="nextPageToken, files(name, id, mimeType)").execute()
+            files = results.get('files', [])
+            page_token = results.get('nextPageToken')
+            if files:
+                max_name_length = max(len(file['name'] + ' (' + file['mimeType'] + ')') for file in files)
+                max_id_length = max(len(file['id']) for file in files)
+                padding_name = '─' * ((max_name_length - len('Nombre') - 2) // 2)
+                padding_id = '─' * ((max_id_length - len('ID')) // 2)
+                table_data = []
+                for i, file in enumerate(files):
+                    name = file['name']
+                    if len(name) > 43:
+                        name = name[:40] + '...'
+                        extra_chars = len(file['name']) - 43
+                        name += f" ({extra_chars} caracteres más)"
+                    table_data.append([
+                        colored(str(file_counter + i + 1), 'white', 'on_yellow'),
+                        colored(name + f" ({file['mimeType']})", 'white', 'on_blue'),
+                        colored(file['id'], 'white')
+                    ])
+                table_headers = [
+                    colored(f"#", 'white', 'on_magenta'),
+                    colored(f"{padding_name} Nombre {padding_name}", 'white', 'on_magenta'),
+                    colored(f"{padding_id} ID {padding_id}", 'white', 'on_cyan')
+                ]
+                table = tabulate(table_data, headers=table_headers, tablefmt='rounded_grid')
+                print(table)
+                file_counter += len(files)
+            else:
+                log.info("No se encontraron archivos en esta carpeta.")
+                break
+            if not page_token:
+                break
+    except Exception as e:
+        log.error(f"No se pudo listar los archivos en la carpeta (ID: {folder_id}): {str(e)}")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+def show_command_help(command):
+    commands = {
+        "cd": {
+            "description": "Navega entre carpetas especificando la ruta de la carpeta.",
+            "usage": "Uso: python main.py cd <ruta_carpeta>"
+        },
+        "dir": {
+            "description": "Lista las carpetas en el directorio raíz.",
+            "usage": "Uso: python main.py dir"
+        },
+        "ls": {
+            "description": "Muestra los elementos dentro de una carpeta especificada.",
+            "usage": "Uso: python main.py ls <ruta_carpeta>"
+        },
+        "find": {
+            "description": "Busca un archivo o carpeta por su ID.",
+            "usage": "Uso: python main.py find <id>"
+        },
+        "upload": {
+            "description": "Sube un archivo a la carpeta especificada.",
+            "usage": "Uso: python main.py upload <ruta_archivo> <nombre_carpeta>"
+        },
+        "delete": {
+            "description": "Elimina un archivo o carpeta por su ID.",
+            "usage": "Uso: python main.py delete <id>"
+        },
+        "help": {
+            "description": "Muestra la lista de comandos disponibles o la ayuda de un comando específico.",
+            "usage": "Uso: python main.py help [<comando>]"
+        }
+    }
+
+    if command in commands:
+        log.info(commands[command]["usage"])
+        log.info("Descripción: " + commands[command]["description"])
+    else:
+        log.error("Comando desconocido.")
