@@ -2,7 +2,7 @@ import os
 import io
 import sys
 
-from googleapiclient.http import MediaIoBaseUpload
+from googleapiclient.http import MediaIoBaseUpload, MediaIoBaseDownload
 
 from modules.logger import Logger
 import modules.utils as utils
@@ -13,13 +13,12 @@ log = Logger()
 drive_service = utils.authenticate()
 
 DEFAULT_FOLDER_NAME = "default-from-desk"
-MAIN_PATH = os.getcwd()
+# MAIN_PATH = os.getcwd()
 
-def upload_file(file_path, folder_name):
-    os.chdir(MAIN_PATH)
+def upload_file(file_path, folder_name, MAIN_PATH):
     results = drive_service.files().list(q=f"mimeType='application/vnd.google-apps.folder' and name='{folder_name}'", spaces='drive', pageSize=10, fields="nextPageToken, files(id, name)").execute()
     items = results.get('files', [])
-
+    # print(os.getcwd())
     if not items:
         log.warn(f"No se encontró ninguna carpeta con el nombre {folder_name}")
         log.warn(f"Creando nueva carpeta con el nombre {folder_name}")
@@ -95,3 +94,32 @@ def delete_item_by_id(item_id):
                 return
     except Exception as e:
         log.error(f"No se pudo eliminar el elemento con ID '{item_id}': {str(e)}")
+
+def download_file(file_id, download_path):
+    try:
+        # Verificar si la carpeta "Descargas" existe, de lo contrario crearla
+        downloads_folder = os.path.join(download_path)
+        if not os.path.exists(downloads_folder):
+            os.makedirs(downloads_folder)
+
+        file = utils.find_by_id(file_id)
+        if not file:
+            log.error(f"No se encontrón elementos con el ID: {file_id}")
+            sys.exit(1)
+        file_name = file['name']
+        
+        download_file_path = os.path.join(downloads_folder, file_name)
+
+        request = drive_service.files().get_media(fileId=file_id)
+        fh = io.FileIO(download_file_path, mode='wb')
+        downloader = MediaIoBaseDownload(fh, request)
+        done = False
+
+        while not done:
+            status, done = downloader.next_chunk()
+            if status:
+                log.log(f"Descargando {file_name}: {int(status.progress() * 100)}% completado")
+
+        log.log(f"Archivo descargado: {download_file_path}")
+    except Exception as e:
+        log.error(f"No se pudo descargar el archivo: {str(e)}")

@@ -1,16 +1,22 @@
 import os
 import sys
 import pickle
+import requests
+import tempfile
 import mimetypes
 
 from google.auth.transport.requests import Request
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 
+from ascii_magic import AsciiArt
 from tabulate import tabulate
 from termcolor import colored
+from PIL import Image
+
 
 from modules.logger import Logger
+from modules.print_Image import img_to_console
 
 log = Logger()
 
@@ -68,8 +74,21 @@ def is_valid_file_id(file_id):
     except:
         return False
 
+def show_list(items=False):
+    if not items or len(items) == 0:
+        log.error("Proporcione una lista de archivos!!!")
+        return
+    else:
+        max_name_length = max(len(file['name'] + ' (' + file['mimeType'] + ')') for file in items)
+        max_id_length = max(len(file['id']) for file in items)
+        padding_name = '─' * ((max_name_length - len('Nombre')) // 2)
+        padding_id = '─' * ((max_id_length - len('ID')) // 2)
+        table_data = [[colored(file['name'], 'white', 'on_blue') + f" ({file['mimeType']})", colored(file['id'], 'white')] for file in items]
+        table_headers = [colored(f"{padding_name} Nombre {padding_name}", 'white'), colored(f"{padding_id} ID {padding_id}", 'white')]
+        table = tabulate(table_data, headers=table_headers, tablefmt='rounded_grid')
+        print(table)
+
 def get_folder_id(folder_name, parent_id):
-    # service = authenticate()
     query = f"mimeType='application/vnd.google-apps.folder' and name='{folder_name}' and '{parent_id}' in parents"
     results = service.files().list(q=query, spaces='drive', pageSize=1, fields='files(id)').execute()
     folders = results.get('files', [])
@@ -79,7 +98,6 @@ def get_folder_id(folder_name, parent_id):
         return None
 
 def search_item_by_id(file_id):
-    # service = authenticate()
     if not is_valid_file_id(file_id):
         log.error("ID inválido.")
         return
@@ -104,10 +122,22 @@ def find_by_id(file_id):
         return False
 
 def list_files_in_folder(folder_name):
-    # service = authenticate()
     # Buscar la carpeta por su nombre
-    folder_results = service.files().list(q=f"mimeType='application/vnd.google-apps.folder' and name='{folder_name}'", spaces='drive', pageSize=10, fields="nextPageToken, files(id, name)").execute()
-    folder_items = folder_results.get('files', [])
+    if folder_name == "root-p":
+        folder_results = service.files().list(q=f"'root' in parents and trashed=false", spaces='drive', pageSize=10, fields="nextPageToken, files(id, name, size, mimeType)").execute()
+        folder_items = folder_results.get('files', [])
+        try:
+            if folder_items:
+                log.info("Mostrando carpeta raíz")
+                show_list(folder_items)
+            else:
+                log.error("No se encontraron archivos en esta carpeta.")
+        except:
+            pass
+        return
+    else:   
+        folder_results = service.files().list(q=f"mimeType='application/vnd.google-apps.folder' and name='{folder_name}'", spaces='drive', pageSize=10, fields="nextPageToken, files(id, name)").execute()
+        folder_items = folder_results.get('files', [])
 
     if not folder_items:
         log.info(f"No se encontró ninguna carpeta con el nombre {folder_name}")
@@ -121,23 +151,22 @@ def list_files_in_folder(folder_name):
     file_items = file_results.get('files', [])
 
     if not file_items:
-        log.info("No se encontraron archivos dentro de la carpeta.")
+        log.error("No se encontraron archivos dentro de la carpeta.")
         return
 
     log.info(f"Archivos encontrados dentro de la carpeta '{folder_name}':")
     
-    try:
-        for file in file_items:
-            name = file['name']
-            size = convert_size(float(file['size'])) if 'size' in file else "'No Disponible'"
-            id = file['id']
-            log.log(f"Nombre: {name} | Tamaño: {size} | ID: {id}")
+    try:    
+        if file_items:
+               show_list(file_items)
+        else:
+            log.error("No se encontraron archivos en esta carpeta.")
+        
     except:
-        log.error("No se pudo mostrar alguna propiedad del archivo.")
+        # log.error("No se pudo mostrar alguna propiedad del archivo.")
         pass
 
 def list_folders():
-    # service = authenticate()
     # Buscar la carpeta por su nombre
     folder_results = service.files().list(q=f"mimeType='application/vnd.google-apps.folder' and trashed=false and 'root' in parents", spaces='drive', pageSize=10, fields="nextPageToken, files(id, name)").execute()
     folder_items = folder_results.get('files', [])
@@ -167,14 +196,7 @@ def navigate_folders(folder_path):
 
     log.info(f"Archivos en la carpeta '{folder_path}':")
     if files:
-        max_name_length = max(len(file['name'] + ' (' + file['mimeType'] + ')') for file in files)
-        max_id_length = max(len(file['id']) for file in files)
-        padding_name = '─' * ((max_name_length - len('Nombre')) // 2)
-        padding_id = '─' * ((max_id_length - len('ID')) // 2)
-        table_data = [[colored(file['name'], 'white', 'on_blue') + f" ({file['mimeType']})", colored(file['id'], 'white')] for file in files]
-        table_headers = [colored(f"{padding_name} Nombre {padding_name}", 'white', 'on_magenta'), colored(f"{padding_id} ID {padding_id}", 'white', 'on_cyan')]
-        table = tabulate(table_data, headers=table_headers, tablefmt='rounded_grid')
-        print(table)
+        show_list(files)
     else:
         log.error("No se encontraron archivos en esta carpeta.")
 
@@ -238,9 +260,9 @@ def lfiles_in_folder(folder_id, folder_name=None, page_size=10):
                         colored(file['id'], 'white')
                     ])
                 table_headers = [
-                    colored(f"#", 'white', 'on_magenta'),
-                    colored(f"{padding_name} Nombre {padding_name}", 'white', 'on_magenta'),
-                    colored(f"{padding_id} ID {padding_id}", 'white', 'on_cyan')
+                    colored(f"#", 'white'),
+                    colored(f"{padding_name} Nombre {padding_name}", 'white'),
+                    colored(f"{padding_id} ID {padding_id}", 'white')
                 ]
                 table = tabulate(table_data, headers=table_headers, tablefmt='rounded_grid')
                 print(table)
@@ -253,10 +275,36 @@ def lfiles_in_folder(folder_id, folder_name=None, page_size=10):
     except Exception as e:
         log.error(f"No se pudo listar los archivos en la carpeta (ID: {folder_id}): {str(e)}")
 
+def get_preview_link(file_id):
+    try:
+        file = service.files().get(fileId=file_id, fields="thumbnailLink").execute()
+        preview_link = file['thumbnailLink']
+        return preview_link
+    except Exception as e:
+        log.error("No se pudo obtener la vista previa")
+        return None
 
-
-
-
+def preview_image(file_id):
+    preview_link = get_preview_link(file_id)
+    if preview_link:
+        try:
+            ascii_art = AsciiArt.from_url(preview_link)
+            ascii_art.to_terminal(columns=60)
+        except Exception as e:
+            log.error("No se pudo mostrar la imagen")
+  
+def prev_image(file_id):
+    preview_link = get_preview_link(file_id)
+    if preview_link:
+        try:
+            r = requests.get(preview_link)
+            with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as temp_file:
+                temp_file.write(r.content)
+                temp_file_path = temp_file.name
+            img_to_console(temp_file_path, 70, 100)
+            os.remove(temp_file_path)
+        except Exception as e:
+            print(f"No se pudo abrir la imagen: {str(e)}")
 
 
 
@@ -296,6 +344,14 @@ def show_command_help(command):
         "delete": {
             "description": "Elimina un archivo o carpeta por su ID.",
             "usage": "Uso: python main.py delete <id>"
+        },
+        "download": {
+            "description": "Descarga un archivo o carpeta por su ID.",
+            "usage": "Uso: python main.py download <id>"
+        },
+        "preview": {
+            "description": "Muestra una vista previa de una imagen o un video por su ID.",
+            "usage": "Uso: python main.py preview <id>"
         },
         "help": {
             "description": "Muestra la lista de comandos disponibles o la ayuda de un comando específico.",
